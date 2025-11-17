@@ -6,8 +6,8 @@ RUN apk add --no-cache \
     py3-pip \
     bash \
     gzip \
-    aws-cli \
-    ca-certificates
+    ca-certificates && \
+    pip3 install --no-cache-dir --break-system-packages awscli
 
 # Create backup script directly in the image
 RUN cat > /usr/local/bin/postgres-backup.sh << 'SCRIPT'
@@ -47,13 +47,24 @@ echo "  S3: s3://${S3_BUCKET}/${S3_PREFIX}"
 echo "  Retention: ${RETENTION_DAYS} days"
 echo ""
 
-# Verify AWS credentials
+# Verify AWS credentials (IRSA-aware)
 echo "Verifying AWS credentials..."
-if ! aws sts get-caller-identity > /dev/null 2>&1; then
-    echo "❌ AWS credentials verification failed"
+if [ -n "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] && [ -f "${AWS_WEB_IDENTITY_TOKEN_FILE}" ]; then
+    echo "✅ Using IRSA (IAM Roles for Service Accounts)"
+    echo "   Token file: ${AWS_WEB_IDENTITY_TOKEN_FILE}"
+    echo "   Role ARN: ${AWS_ROLE_ARN:-not set}"
+    # Try to verify but don't fail if it doesn't work immediately
+    if aws sts get-caller-identity > /dev/null 2>&1; then
+        echo "✅ AWS credentials verified"
+    else
+        echo "⚠️  AWS credentials not verified yet, will attempt backup anyway"
+    fi
+elif aws sts get-caller-identity > /dev/null 2>&1; then
+    echo "✅ Using AWS credentials from environment"
+else
+    echo "❌ No valid AWS credentials found"
     exit 1
 fi
-echo "✅ AWS credentials OK"
 echo ""
 
 # Test database connection
