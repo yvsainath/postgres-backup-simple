@@ -1,4 +1,4 @@
-FROM ghcr.io/nvision-x/alpine-base-dockerfile:sha256-e1c87245f926bdc2b2c694f0771f561ed07af4ded7e1037a7af8d8a897d9c9d5.sig
+FROM ghcr.io/nvision-x/alpine-base-dockerfile@sha256:e1c87245f926bdc2b2c694f0771f561ed07af4ded7e1037a7af8d8a897d9c9d5
 
 # Install PostgreSQL client and required tools
 RUN apk add --no-cache \
