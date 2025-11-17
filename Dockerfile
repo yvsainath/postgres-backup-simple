@@ -105,14 +105,14 @@ for DB in "${DB_ARRAY[@]}"; do
         if aws s3 cp ${DUMP_FILE} ${S3_PATH} --region ${AWS_DEFAULT_REGION}; then
             echo "✅ Uploaded to: ${S3_PATH}"
             rm -f ${DUMP_FILE}
-            ((SUCCESS++))
+            SUCCESS=$((SUCCESS + 1))
         else
             echo "❌ Upload failed"
-            ((FAILED++))
+            FAILED=$((FAILED + 1))
         fi
     else
         echo "❌ Backup failed"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
     echo ""
 done
@@ -131,7 +131,7 @@ for DB in "${DB_ARRAY[@]}"; do
             if [[ $FILE_DATE < $CUTOFF_DATE ]]; then
                 echo "🗑️  Deleting: ${FILE}"
                 aws s3 rm s3://${S3_BUCKET}/${S3_PREFIX}/${DB}/${FILE} --region ${AWS_DEFAULT_REGION}
-                ((DELETED++))
+                DELETED=$((DELETED + 1))
             fi
         fi
     done
