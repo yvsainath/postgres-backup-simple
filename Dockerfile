@@ -70,10 +70,10 @@ RUN set -eux; \
     find /usr -xdev -perm /6000 -type f -exec chmod a-s {} \; 2>/dev/null || true
 
 # Set working directory first
-WORKDIR /scripts
+WORKDIR /app
 
 # Copy backup script to working directory with proper permissions
-COPY --chown=appuser:appgroup --chmod=755 postgres-backup.sh /app/postgres-backup.sh
+COPY --chown=appuser:appgroup --chmod=755 scripts/postgres-backup.sh /app/postgres-backup.sh
 
 # Verify script was copied correctly
 RUN test -f /app/postgres-backup.sh && \
