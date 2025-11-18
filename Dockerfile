@@ -29,42 +29,38 @@ RUN set -eux; \
     # Update package index
     apk update; \
     \
-    # Install required packages with specific versions where possible
+    # Install required packages (flexible versioning to avoid build failures)
+    # Note: Strict version pinning (=~17) can cause "exit code: 3" errors
+    # when exact versions don't match available packages
     apk add --no-cache \
-        postgresql17-client=~17 \
-        python3=~3.12 \
-        py3-pip=~24 \
-        bash=~5.2 \
-        gzip=~1.13 \
-        coreutils=~9.5 \
-        findutils=~4.10; \
+        postgresql17-client \
+        python3 \
+        py3-pip \
+        bash \
+        gzip \
+        coreutils \
+        findutils; \
     \
-    # Install AWS CLI using pip with break-system-packages flag
+    # Install AWS CLI using pip (let pip resolve compatible versions)
+    # Note: Exact versions (==1.36.14) can cause dependency conflicts
     pip3 install --no-cache-dir --break-system-packages \
-        awscli==1.36.14 \
-        botocore==1.36.14; \
+        awscli \
+        botocore; \
     \
     # Clean up package cache
     rm -rf /var/cache/apk/*; \
     rm -rf /root/.cache; \
-    \
-    # Create backup script directory with proper permissions
-    mkdir -p /usr/local/bin; \
-    \
-    # Create backup working directory owned by appuser
-    mkdir -p /tmp/backups; \
-    chown -R appuser:appgroup /tmp/backups; \
-    chmod 750 /tmp/backups; \
-    \
-    # Remove any world-writable permissions
-    find /tmp/backups -type d -exec chmod 750 {} \;; \
-    find /tmp/backups -type f -exec chmod 640 {} \; 2>/dev/null || true; \
     \
     # Verify critical binaries exist
     command -v pg_dump || exit 1; \
     command -v psql || exit 1; \
     command -v aws || exit 1; \
     command -v python3 || exit 1; \
+    \
+    # Create backup working directory with permissive permissions initially
+    # Will be secured after switching to appuser
+    mkdir -p /tmp/backups; \
+    chmod 777 /tmp/backups; \
     \
     # Remove setuid/setgid bits from new binaries
     find /usr -xdev -perm /6000 -type f -exec chmod a-s {} \; 2>/dev/null || true
@@ -93,17 +89,15 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     # Security: Prevent Python from creating bytecode files
     PYTHONDONTWRITEBYTECODE=1
 
-# Create backup directory for temporary files
-RUN mkdir -p /tmp/backups && \
-    chown -R appuser:appgroup /tmp/backups && \
-    chmod 750 /tmp/backups
-
 # Health check to verify script exists and is executable
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD ["/bin/sh", "-c", "test -x /app/postgres-backup.sh && exit 0 || exit 1"]
 
 # Switch to non-root user for runtime
 USER appuser
+
+# Secure the backup directory now that we're running as appuser
+RUN mkdir -p /tmp/backups && chmod 750 /tmp/backups
 
 # Use dumb-init as entrypoint (inherited from base image)
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
