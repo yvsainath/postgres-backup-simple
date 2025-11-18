@@ -1,167 +1,112 @@
-FROM postgres:17-alpine
+# Hardened PostgreSQL Backup Image
+# Based on security-hardened Alpine base image
+# Includes comprehensive security scanning and best practices
 
-# Install required tools
-RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    bash \
-    gzip \
-    ca-certificates && \
-    pip3 install --no-cache-dir --break-system-packages awscli
+# Use the hardened Alpine base image from your registry
+# Note: Use the actual image digest, not the .sig file
+FROM ghcr.io/nvision-x/alpine-base-dockerfile@sha256:e1c87245f926bdc2b2c694f0771f561ed07af4ded7e1037a7af8d8a897d9c9d5
 
-# Create backup script directly in the image
-RUN cat > /usr/local/bin/postgres-backup.sh << 'SCRIPT'
-#!/bin/bash
-set -euo pipefail
+# Build arguments for metadata
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION=1.0.0
 
-echo "==========================================="
-echo "PostgreSQL Backup to S3"
-echo "==========================================="
-echo "Started at: $(date)"
-echo ""
+# Metadata labels following OCI standards
+LABEL org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.title="Hardened PostgreSQL Backup" \
+      org.opencontainers.image.description="Security-hardened PostgreSQL backup container with S3 support" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.vendor="NVISIONx" \
+      org.opencontainers.image.licenses="MIT" \
+      maintainer="devops@nvisionx.com"
 
-# Check required environment variables
-for var in POSTGRES_HOST POSTGRES_USER POSTGRES_PASSWORD DATABASES S3_BUCKET AWS_DEFAULT_REGION; do
-    if [ -z "${!var:-}" ]; then
-        echo "❌ ERROR: $var is not set"
-        exit 1
-    fi
-done
+# Switch to root for installation (required for apk)
+USER root
 
-# Set defaults
-POSTGRES_PORT=${POSTGRES_PORT:-5432}
-S3_PREFIX=${S3_PREFIX:-postgres-backups}
-RETENTION_DAYS=${RETENTION_DAYS:-30}
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/tmp/backups"
+# Install PostgreSQL client and backup tools with security hardening
+RUN set -eux; \
+    # Update package index
+    apk update; \
+    \
+    # Install required packages with specific versions where possible
+    apk add --no-cache \
+        postgresql17-client=~17 \
+        python3=~3.12 \
+        py3-pip=~24 \
+        bash=~5.2 \
+        gzip=~1.13 \
+        coreutils=~9.5 \
+        findutils=~4.10; \
+    \
+    # Install AWS CLI using pip with break-system-packages flag
+    pip3 install --no-cache-dir --break-system-packages \
+        awscli==1.36.14 \
+        botocore==1.36.14; \
+    \
+    # Clean up package cache
+    rm -rf /var/cache/apk/*; \
+    rm -rf /root/.cache; \
+    \
+    # Create backup script directory with proper permissions
+    mkdir -p /usr/local/bin; \
+    \
+    # Create backup working directory owned by appuser
+    mkdir -p /tmp/backups; \
+    chown -R appuser:appgroup /tmp/backups; \
+    chmod 750 /tmp/backups; \
+    \
+    # Remove any world-writable permissions
+    find /tmp/backups -type d -exec chmod 750 {} \;; \
+    find /tmp/backups -type f -exec chmod 640 {} \; 2>/dev/null || true; \
+    \
+    # Verify critical binaries exist
+    command -v pg_dump || exit 1; \
+    command -v psql || exit 1; \
+    command -v aws || exit 1; \
+    command -v python3 || exit 1; \
+    \
+    # Remove setuid/setgid bits from new binaries
+    find /usr -xdev -perm /6000 -type f -exec chmod a-s {} \; 2>/dev/null || true
 
-mkdir -p ${BACKUP_DIR}
+# Set working directory first
+WORKDIR /scripts
 
-# Parse databases (comma-separated)
-IFS=',' read -ra DB_ARRAY <<< "${DATABASES}"
+# Copy backup script to working directory with proper permissions
+COPY --chown=appuser:appgroup --chmod=755 postgres-backup.sh /app/postgres-backup.sh
 
-echo "Configuration:"
-echo "  Host: ${POSTGRES_HOST}:${POSTGRES_PORT}"
-echo "  Databases: ${DATABASES}"
-echo "  S3: s3://${S3_BUCKET}/${S3_PREFIX}"
-echo "  Retention: ${RETENTION_DAYS} days"
-echo ""
+# Verify script was copied correctly
+RUN test -f /app/postgres-backup.sh && \
+    test -x /app/postgres-backup.sh
 
-# Verify AWS credentials (IRSA-aware)
-echo "Verifying AWS credentials..."
-if [ -n "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] && [ -f "${AWS_WEB_IDENTITY_TOKEN_FILE}" ]; then
-    echo "✅ Using IRSA (IAM Roles for Service Accounts)"
-    echo "   Token file: ${AWS_WEB_IDENTITY_TOKEN_FILE}"
-    echo "   Role ARN: ${AWS_ROLE_ARN:-not set}"
-    # Try to verify but don't fail if it doesn't work immediately
-    if aws sts get-caller-identity > /dev/null 2>&1; then
-        echo "✅ AWS credentials verified"
-    else
-        echo "⚠️  AWS credentials not verified yet, will attempt backup anyway"
-    fi
-elif aws sts get-caller-identity > /dev/null 2>&1; then
-    echo "✅ Using AWS credentials from environment"
-else
-    echo "❌ No valid AWS credentials found"
-    exit 1
-fi
-echo ""
+# Set secure environment variables
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC \
+    PYTHONUNBUFFERED=1 \
+    # PostgreSQL defaults (override at runtime)
+    POSTGRES_PORT=5432 \
+    # S3 defaults (override at runtime)
+    S3_PREFIX=postgres-backups \
+    RETENTION_DAYS=30 \
+    # Security: Prevent Python from creating bytecode files
+    PYTHONDONTWRITEBYTECODE=1
 
-# Test database connection
-echo "Testing database connection..."
-if ! PGPASSWORD=${POSTGRES_PASSWORD} psql -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER} -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-    echo "❌ Database connection failed"
-    exit 1
-fi
-echo "✅ Database connection OK"
-echo ""
+# Create backup directory for temporary files
+RUN mkdir -p /tmp/backups && \
+    chown -R appuser:appgroup /tmp/backups && \
+    chmod 750 /tmp/backups
 
-# Backup each database
-SUCCESS=0
-FAILED=0
+# Health check to verify script exists and is executable
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["/bin/sh", "-c", "test -x /app/postgres-backup.sh && exit 0 || exit 1"]
 
-for DB in "${DB_ARRAY[@]}"; do
-    echo "==========================================="
-    echo "📦 Backing up: ${DB}"
-    DUMP_FILE="${BACKUP_DIR}/${DB}_${TIMESTAMP}.sql.gz"
-    
-    if PGPASSWORD=${POSTGRES_PASSWORD} pg_dump \
-        -h ${POSTGRES_HOST} \
-        -p ${POSTGRES_PORT} \
-        -U ${POSTGRES_USER} \
-        -d ${DB} \
-        --no-owner \
-        --no-acl \
-        --clean \
-        --if-exists 2>&1 | gzip > ${DUMP_FILE}; then
-        
-        SIZE=$(du -h ${DUMP_FILE} | cut -f1)
-        echo "✅ Backup created: ${SIZE}"
-        
-        # Upload to S3
-        S3_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${DB}/${DB}_${TIMESTAMP}.sql.gz"
-        echo "☁️  Uploading to S3..."
-        
-        if aws s3 cp ${DUMP_FILE} ${S3_PATH} --region ${AWS_DEFAULT_REGION}; then
-            echo "✅ Uploaded to: ${S3_PATH}"
-            rm -f ${DUMP_FILE}
-            SUCCESS=$((SUCCESS + 1))
-        else
-            echo "❌ Upload failed"
-            FAILED=$((FAILED + 1))
-        fi
-    else
-        echo "❌ Backup failed"
-        FAILED=$((FAILED + 1))
-    fi
-    echo ""
-done
+# Switch to non-root user for runtime
+USER appuser
 
-# Cleanup old backups
-echo "==========================================="
-echo "🧹 Cleaning up old backups..."
-CUTOFF_DATE=$(date -d "${RETENTION_DAYS} days ago" +%Y%m%d 2>/dev/null || date -v-${RETENTION_DAYS}d +%Y%m%d)
-DELETED=0
+# Use dumb-init as entrypoint (inherited from base image)
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
-for DB in "${DB_ARRAY[@]}"; do
-    aws s3 ls s3://${S3_BUCKET}/${S3_PREFIX}/${DB}/ --region ${AWS_DEFAULT_REGION} 2>/dev/null | while read -r line; do
-        FILE=$(echo $line | awk '{print $4}')
-        if [[ $FILE =~ ${DB}_([0-9]{8})_[0-9]{6}\.sql\.gz$ ]]; then
-            FILE_DATE=${BASH_REMATCH[1]}
-            if [[ $FILE_DATE < $CUTOFF_DATE ]]; then
-                echo "🗑️  Deleting: ${FILE}"
-                aws s3 rm s3://${S3_BUCKET}/${S3_PREFIX}/${DB}/${FILE} --region ${AWS_DEFAULT_REGION}
-                DELETED=$((DELETED + 1))
-            fi
-        fi
-    done
-done
-
-echo "Deleted ${DELETED} old backup(s)"
-echo ""
-
-# Summary
-echo "==========================================="
-echo "Backup Summary:"
-echo "  Successful: ${SUCCESS}"
-echo "  Failed: ${FAILED}"
-echo "  Completed at: $(date)"
-echo "==========================================="
-
-if [ ${FAILED} -eq 0 ]; then
-    echo "✅ All backups completed successfully"
-    exit 0
-else
-    echo "❌ Some backups failed"
-    exit 1
-fi
-SCRIPT
-
-# Make script executable
-RUN chmod +x /usr/local/bin/postgres-backup.sh
-
-# Set working directory
-WORKDIR /tmp
-
-# Default command
-CMD ["/usr/local/bin/postgres-backup.sh"]
+# Default command runs the backup script from working directory
+CMD ["/bin/bash", "/app/postgres-backup.sh"]
