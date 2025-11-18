@@ -1,301 +1,168 @@
-# PostgreSQL Backup - Simple Approach
+# PostgreSQL Backup to S3
 
-## 📦 What This Is
+Automated PostgreSQL database backup solution with S3 storage and IRSA support for EKS.
 
-**Super simple** PostgreSQL backup solution:
-- ✅ **One Docker image** with everything baked in
-- ✅ **Simple YAML files** - no ConfigMaps with scripts
-- ✅ **No Helm** - just plain Kubernetes YAML
-- ✅ **Self-contained** - script embedded in the Docker image
+## Features
 
-## 🏗️ Structure
+- ✅ **Multiple database support** - Backup multiple databases in one job
+- ✅ **IRSA authentication** - No AWS credentials in secrets (uses IAM Roles for Service Accounts)
+- ✅ **Automatic retention** - Cleanup backups older than specified days
+- ✅ **Compressed backups** - Uses gzip compression
+- ✅ **EKS optimized** - Designed for Kubernetes/EKS environments
+- ✅ **Company base image** - Built on NVisionX Alpine base
 
-```
-.
-├── Dockerfile              # Image with backup script built-in
-├── build.sh                # Build the Docker image
-├── kubernetes/
-│   ├── cronjob.yaml       # Scheduled backup (daily)
-│   └── job-test.yaml      # One-time test job
-└── README.md              # This file
-```
+## Quick Start
 
-## 🚀 Quick Start
-
-### 1. Build the Docker Image
+### Kubernetes Deployment
 
 ```bash
-# Build
-./build.sh your-registry postgres-backup 1.0.0
-
-# Example for GitHub Container Registry
-./build.sh ghcr.io/your-org postgres-backup 1.0.0
-
-# Example for AWS ECR
-./build.sh 123456.dkr.ecr.us-east-1.amazonaws.com postgres-backup 1.0.0
-
-# Push to registry
-docker push your-registry/postgres-backup:1.0.0
-```
-
-### 2. Edit Kubernetes YAML Files
-
-**Edit `kubernetes/cronjob.yaml` and `kubernetes/job-test.yaml`:**
-
-```yaml
-# Change these values:
-- image: your-registry/postgres-backup:1.0.0  # Your image
-- POSTGRES_HOST: "your-database.rds.amazonaws.com"
-- DATABASES: "db1,db2,db3"  # Comma-separated
-- S3_BUCKET: "your-backup-bucket"
-- POSTGRES_PASSWORD in Secret
-- IAM role ARN in ServiceAccount annotation
-```
-
-### 3. Deploy
-
-```bash
-# Deploy
+# Deploy the CronJob
 kubectl apply -f kubernetes/cronjob.yaml
 
-# Verify
-kubectl get cronjob postgres-backup
-kubectl get serviceaccount postgres-backup
-kubectl get secret postgres-backup-secret
+# Test immediately
+kubectl apply -f kubernetes/test-job.yaml
+kubectl logs -f job/postgres-backup-test
 ```
 
-### 4. Test Immediately
+### Environment Variables
+
+Required:
+- `POSTGRES_HOST` - PostgreSQL server hostname
+- `POSTGRES_USER` - PostgreSQL username
+- `POSTGRES_PASSWORD` - PostgreSQL password
+- `DATABASES` - Comma-separated list of databases (e.g., "db1,db2,db3")
+- `S3_BUCKET` - S3 bucket name for backups
+- `AWS_DEFAULT_REGION` - AWS region
+
+Optional:
+- `POSTGRES_PORT` - PostgreSQL port (default: 5432)
+- `S3_PREFIX` - S3 prefix/folder (default: postgres-backups)
+- `RETENTION_DAYS` - Backup retention in days (default: 30)
+- `AWS_WEB_IDENTITY_TOKEN_FILE` - For IRSA (auto-set by EKS)
+- `AWS_ROLE_ARN` - IAM role ARN (auto-set by EKS)
+
+## Building
+
+### Using GitHub Actions (Recommended)
+
+Merge to `main` or `master` branch to trigger automatic build.
+
+### Local Build
 
 ```bash
-# Run test job
-kubectl apply -f kubernetes/job-test.yaml
+# Login to GHCR
+echo $GITHUB_TOKEN | docker login ghcr.io -u your-username --password-stdin
 
-# Watch
-kubectl get jobs -w
+# Build
+./build.sh
 
-# Check logs
-kubectl logs -l job=test --follow
+# Or manually
+docker build -t ghcr.io/nvision-x/postgres-backup:latest .
+docker push ghcr.io/nvision-x/postgres-backup:latest
 ```
 
-## 📝 Configuration
+## Image
 
-### Environment Variables (in YAML)
+**Registry:** `ghcr.io/nvision-x/postgres-backup`
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `POSTGRES_HOST` | Database host | `db.example.com` |
-| `POSTGRES_PORT` | Database port | `5432` |
-| `POSTGRES_USER` | Database user | `postgres` |
-| `POSTGRES_PASSWORD` | Database password | `secret` (from Secret) |
-| `DATABASES` | Comma-separated databases | `db1,db2,db3` |
-| `S3_BUCKET` | S3 bucket name | `my-backups` |
-| `S3_PREFIX` | S3 prefix/folder | `postgres-backups` |
-| `AWS_DEFAULT_REGION` | AWS region | `us-east-1` |
-| `RETENTION_DAYS` | Days to keep backups | `30` |
+**Tags:**
+- `latest` - Latest build from main branch
+- `sha-XXXXXXX` - Specific commit SHA
+- `vX.Y.Z` - Semantic versioning (when tagged)
 
-### Schedule (Cron Format)
+**Base Image:** `ghcr.io/nvision-x/alpine-base-dockerfile`
 
-Edit `schedule` in `cronjob.yaml`:
+## IAM Setup
 
-```yaml
-schedule: "0 2 * * *"  # Daily at 2 AM UTC
-# Other examples:
-# "0 */6 * * *"   # Every 6 hours
-# "0 0 * * 0"     # Weekly on Sunday
-# "0 3 * * 1-5"   # Weekdays at 3 AM
-```
-
-## 🔐 AWS Setup
-
-### IAM Policy
+### Required S3 Permissions
 
 ```json
 {
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": [
-      "s3:PutObject",
-      "s3:GetObject",
-      "s3:ListBucket",
-      "s3:DeleteObject"
-    ],
-    "Resource": [
-      "arn:aws:s3:::your-bucket",
-      "arn:aws:s3:::your-bucket/*"
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:DeleteObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::your-backup-bucket",
+                "arn:aws:s3:::your-backup-bucket/*"
+            ]
+        }
     ]
-  }]
 }
 ```
 
-### IAM Role (IRSA)
+### IRSA Trust Policy
 
-```bash
-# Create trust policy
-cat > trust-policy.json << EOF
+```json
 {
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {
-      "Federated": "arn:aws:iam::ACCOUNT:oidc-provider/oidc.eks.REGION.amazonaws.com/id/OIDC_ID"
-    },
-    "Action": "sts:AssumeRoleWithWebIdentity",
-    "Condition": {
-      "StringEquals": {
-        "oidc.eks.REGION.amazonaws.com/id/OIDC_ID:sub": "system:serviceaccount:default:postgres-backup"
-      }
-    }
-  }]
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::ACCOUNT:oidc-provider/oidc.eks.REGION.amazonaws.com/id/XXXXX"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "oidc.eks.REGION.amazonaws.com/id/XXXXX:sub": "system:serviceaccount:NAMESPACE:SERVICE_ACCOUNT_NAME",
+                    "oidc.eks.REGION.amazonaws.com/id/XXXXX:aud": "sts.amazonaws.com"
+                }
+            }
+        }
+    ]
 }
-EOF
-
-# Create role
-aws iam create-role --role-name postgres-backup-role \
-  --assume-role-policy-document file://trust-policy.json
-
-# Attach policy
-aws iam put-role-policy --role-name postgres-backup-role \
-  --policy-name s3-access --policy-document file://s3-policy.json
 ```
 
-## 🎯 Common Commands
+## Backup Schedule
+
+Default schedule: Daily at 2 AM UTC (`0 2 * * *`)
+
+Modify in `kubernetes/cronjob.yaml`:
+```yaml
+spec:
+  schedule: "0 2 * * *"  # Cron format
+```
+
+## Monitoring
 
 ```bash
-# Manual backup
-kubectl create job manual-backup-$(date +%s) --from=cronjob/postgres-backup
+# Check CronJob status
+kubectl get cronjob postgres-backup
 
-# View logs
-kubectl logs -l app=postgres-backup --tail=100
+# View recent job logs
+kubectl logs job/$(kubectl get jobs -l app=postgres-backup --sort-by=.metadata.creationTimestamp -o name | tail -1)
 
-# Check job status
-kubectl get jobs -l app=postgres-backup
-
-# Suspend backups
-kubectl patch cronjob postgres-backup -p '{"spec":{"suspend":true}}'
-
-# Resume backups
-kubectl patch cronjob postgres-backup -p '{"spec":{"suspend":false}}'
-
-# Delete everything
-kubectl delete -f kubernetes/cronjob.yaml
+# List S3 backups
+aws s3 ls s3://your-bucket/postgres-backups/ --recursive
 ```
 
-## 🧪 Testing Locally
+## Troubleshooting
 
-```bash
-# Test with Docker (requires AWS credentials)
-docker run --rm \
-  -e POSTGRES_HOST=your-host \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=password \
-  -e DATABASES=db1,db2 \
-  -e S3_BUCKET=your-bucket \
-  -e AWS_DEFAULT_REGION=us-east-1 \
-  -e AWS_ACCESS_KEY_ID=xxx \
-  -e AWS_SECRET_ACCESS_KEY=xxx \
-  your-registry/postgres-backup:latest
-```
+### Authentication Errors
 
-## 📊 How It Works
+Check IAM role trust policy includes your service account.
 
-1. **Docker image** has backup script built-in at `/usr/local/bin/postgres-backup.sh`
-2. **When container starts**, script runs automatically
-3. **Script does**:
-   - Verifies environment variables
-   - Tests AWS credentials
-   - Tests database connection
-   - Backs up each database using `pg_dump`
-   - Compresses with `gzip`
-   - Uploads to S3
-   - Deletes old backups based on retention
-4. **Exit codes**: 0 = success, 1 = failure
+### Database Connection Failed
 
-## 🔄 Updates
+Verify:
+- PostgreSQL host and port
+- Username and password
+- Network connectivity from EKS to RDS
 
-To update the image:
+### S3 Upload Failed
 
-```bash
-# Modify Dockerfile
-vim Dockerfile
+Verify:
+- S3 bucket exists
+- IAM role has proper permissions
+- Bucket policy allows the role
 
-# Rebuild with new tag
-./build.sh your-registry postgres-backup 1.0.1
+## License
 
-# Push
-docker push your-registry/postgres-backup:1.0.1
-
-# Update YAML
-sed -i 's/:1.0.0/:1.0.1/g' kubernetes/*.yaml
-
-# Apply
-kubectl apply -f kubernetes/cronjob.yaml
-```
-
-## 🐛 Troubleshooting
-
-**Problem: Image pull error**
-```bash
-# Verify image exists
-docker images | grep postgres-backup
-
-# Check imagePullSecrets if using private registry
-kubectl get serviceaccount postgres-backup -o yaml
-```
-
-**Problem: AWS credentials failed**
-```bash
-# Check IRSA annotation
-kubectl get sa postgres-backup -o yaml | grep role-arn
-
-# Test in pod
-kubectl run test --rm -it --image=amazon/aws-cli \
-  --serviceaccount=postgres-backup -- sts get-caller-identity
-```
-
-**Problem: Database connection failed**
-```bash
-# Test from pod
-kubectl run test --rm -it --image=postgres:17-alpine -- \
-  psql -h your-host -U postgres -d postgres
-```
-
-**Problem: Job keeps failing**
-```bash
-# Check logs
-kubectl logs -l app=postgres-backup --tail=100
-
-# Describe job
-kubectl describe job postgres-backup-test
-
-# Check events
-kubectl get events --sort-by='.lastTimestamp'
-```
-
-## ✅ Advantages of This Approach
-
-- ✅ **Simple** - No Helm, no complex templating
-- ✅ **Self-contained** - Script is in the image
-- ✅ **Easy to version control** - Just track Dockerfile and YAML
-- ✅ **Easy to customize** - Edit Dockerfile, rebuild
-- ✅ **No external dependencies** - Everything in one image
-- ✅ **Works anywhere** - Any Kubernetes cluster
-
-## 📁 For GitHub Repo
-
-Recommended structure:
-
-```
-postgres-backup/
-├── README.md
-├── Dockerfile
-├── build.sh
-├── .github/
-│   └── workflows/
-│       └── build.yaml    # GitHub Actions to build image
-└── kubernetes/
-    ├── cronjob.yaml
-    └── job-test.yaml
-```
-
-That's it! Simple and clean. 🎉
+Internal NVisionX tool - Not for external distribution
